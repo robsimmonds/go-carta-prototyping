@@ -8,7 +8,7 @@ fi
 mkdir -p build
 
 # list of services
-SERVICES=("carta-ctl" "carta-worker" "carta-spawn" "api")
+SERVICES=("carta-ctl" "carta-worker" "carta-spawn" "carta-list" "api")
 
 # Loop through each service and build it
 for SERVICE_NAME in "${SERVICES[@]}"; do
