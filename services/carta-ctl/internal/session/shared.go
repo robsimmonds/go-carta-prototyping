@@ -54,7 +54,8 @@ func (s *Session) handleProxiedMessage(eventType cartaDefinitions.EventType, req
 	slog.Debug("Proxying message from client to worker", "eventType", eventType, "workerName", workerName)
 
 	if targetWorker == nil {
-		return fmt.Errorf("no worker available to handle message")
+		slog.Debug("Ignoring message because no worker exists yet", "eventType", eventType, "requestId", requestId)
+		return nil
 	}
 
 	targetWorker.sendChan <- messageBytes
@@ -63,7 +64,8 @@ func (s *Session) handleProxiedMessage(eventType cartaDefinitions.EventType, req
 
 func (s *Session) handleStatusMessage(_ cartaDefinitions.EventType, _ uint32, _ []byte) error {
 	if s.Info.WorkerId == "" {
-		return fmt.Errorf("status request received before worker registration")
+		slog.Debug("Ignoring status request because no worker exists yet")
+		return nil
 	}
 	status, err := spawnerHelpers.GetWorkerStatus(s.Info.WorkerId, s.SpawnerAddress)
 	if err != nil {
