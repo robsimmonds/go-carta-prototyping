@@ -19,12 +19,15 @@ type contextKey string
 const UserContextKey contextKey = "sessionUser"
 
 type Session struct {
-	Info           spawnerHelpers.WorkerInfo
-	SpawnerAddress string
-	WebSocket      *websocket.Conn
-	User           *auth.User
-	Context        context.Context
-	Cancel         context.CancelFunc
+	Info            spawnerHelpers.WorkerInfo
+	CartaListInfo   spawnerHelpers.ListProcessInfo
+	SpawnerAddress  string
+	CallbackBaseURL string
+	WebSocket       *websocket.Conn
+	User            *auth.User
+	SessionID       string
+	Context         context.Context
+	Cancel          context.CancelFunc
 
 	clientSendChan chan []byte
 	// maps incoming file IDs to the internal IDs of the workers
@@ -39,14 +42,15 @@ var handlerMap = map[cartaDefinitions.EventType]func(*Session, cartaDefinitions.
 	cartaDefinitions.EventType_EMPTY_EVENT: (*Session).handleStatusMessage,
 }
 
-func NewSession(conn *websocket.Conn, workerAddr string, user *auth.User) *Session {
+func NewSession(conn *websocket.Conn, workerAddr string, callbackBaseURL string, user *auth.User) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		WebSocket:      conn,
-		SpawnerAddress: workerAddr,
-		User:           user,
-		Context:        ctx,
-		Cancel:         cancel,
+		WebSocket:       conn,
+		SpawnerAddress:  workerAddr,
+		CallbackBaseURL: callbackBaseURL,
+		User:            user,
+		Context:         ctx,
+		Cancel:          cancel,
 	}
 }
 
@@ -104,6 +108,15 @@ func (s *Session) HandleDisconnect() {
 	// Close the client channel to signal the sender goroutine to stop
 	if s.clientSendChan != nil {
 		close(s.clientSendChan)
+	}
+
+	if s.CartaListInfo.ListId != "" {
+		err := spawnerHelpers.RequestCartaListShutdown(s.CartaListInfo.ListId, s.SpawnerAddress)
+		if err != nil {
+			slog.Error("Error shutting down carta-list", "error", err)
+		} else {
+			slog.Info("Shut down carta-list", "listId", s.CartaListInfo.ListId)
+		}
 	}
 
 	if s.Info.WorkerId == "" {

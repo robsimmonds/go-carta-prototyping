@@ -14,15 +14,24 @@ environment = "development"
 log_level = "info"
 
 # ============================================================================
+# Logging Configuration
+# ============================================================================
+[logging]
+
+# Directory for CARTA service log files.
+# For development, a relative path like "./logs" is often easier.
+# For packaged deployments, "/var/log/carta" is a sensible choice.
+dir = "./logs"
+
+# Also mirror logs to stdout/stderr in addition to the log file.
+also_stdout = true
+
+# ============================================================================
 # Controller Configuration
 # ============================================================================
 [controller]
 
 # Authentication mode: "none", "pam", "oidc", or "both"
-# - none: No authentication required
-# - pam: Use PAM (Pluggable Authentication Modules) for system user authentication
-# - oidc: Use OpenID Connect for authentication
-# - both: Allow both PAM and OIDC authentication
 auth_mode = "none"
 
 # Port for the controller HTTP/WebSocket server
@@ -32,40 +41,22 @@ port = 8081
 hostname = ""
 
 # Directory containing the CARTA frontend static files
-# If empty, the controller will not serve the frontend
 frontend_dir = ""
 
-# Address of the spawner service. If this is empty, the controller will determine the address from the spawner hostname and port
+# Address of the spawner service
 spawner_address = "http://localhost:8080"
 
-# If exposing the controller to users other than at the top level of a domain the controller must tell the frontend where to find interfaces
-# - If the controller is accessed at http://mydomain.tld/ the default should suffice
-# - If the controller is accessed at, e.g., http://mydomain.tld/carta/ this should then be set to "/carta/api"
+# If exposing the controller to users other than at the top level of a domain
+# the controller must tell the frontend where to find interfaces
 api_prefix = "/api"
 
-# ----------------------------------------------------------------------------
-# PAM Authentication Configuration (when auth_mode = "pam" or "both")
-# ----------------------------------------------------------------------------
 [controller.pam]
-
-# PAM service name to use for authentication
 service_name = "carta"
 
-# ----------------------------------------------------------------------------
-# OIDC Authentication Configuration (when auth_mode = "oidc" or "both")
-# ----------------------------------------------------------------------------
 [controller.oidc]
-
-# OIDC issuer URL
 issuer_url = ""
-
-# OIDC client ID registered with your identity provider
 client_id = ""
-
-# OIDC client secret
 client_secret = ""
-
-# OIDC redirect/callback URL
 redirect_url = ""
 
 # ============================================================================
@@ -75,6 +66,9 @@ redirect_url = ""
 
 # Path or command to the CARTA backend executable
 worker_exec = "carta_backend"
+
+# Path or command to the CARTA listing executable
+list_exec = "carta-list"
 
 # Timeout duration for spawning worker processes
 timeout = "5s"
@@ -86,9 +80,8 @@ port = 8080
 hostname = ""
 
 # Base directory for user data access
-# 
-# References to {{{.user}}} in the string will be replaced with the username of the user
-# and "{{.home}}" will be replaced by the user's home directory
+# References to {{{.user}}} in the string will be replaced with the username
+# of the user and "{{.home}}" will be replaced by the user's home directory
 base_dir_tmpl = "{{.home}}"
 
 # Top level directory for user data access

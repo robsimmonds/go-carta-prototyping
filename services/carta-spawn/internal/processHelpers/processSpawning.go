@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"os/user"
 	"regexp"
 	"strconv"
@@ -159,6 +160,28 @@ func SpawnWorker(ctx context.Context, workerPath string, timeoutDuration time.Du
 	}
 }
 
+
+
+func resolveExecutablePath(executablePath string) (string, error) {
+	if executablePath == "" {
+		return "", fmt.Errorf("empty executable path")
+	}
+	if filepath.IsAbs(executablePath) || strings.ContainsRune(executablePath, os.PathSeparator) {
+		return executablePath, nil
+	}
+	if resolved, err := exec.LookPath(executablePath); err == nil {
+		return resolved, nil
+	}
+	self, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(self), executablePath)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("unable to resolve executable %q via PATH or relative to current binary", executablePath)
+}
+
 func TestWorker(ctx context.Context, port int, timeoutDuration time.Duration) error {
 	addr := fmt.Sprintf("ws://localhost:%d", port)
 
@@ -188,4 +211,42 @@ func TestWorker(ctx context.Context, port int, timeoutDuration time.Duration) er
 	}
 
 	return nil
+}
+
+
+func SpawnCartaList(ctx context.Context, executablePath string, username string, ctlAddress string, sessionID string, siteID string, token string, baseFolder string) (*exec.Cmd, error) {
+	resolvedExec, err := resolveExecutablePath(executablePath)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		"--ctl-address", ctlAddress,
+		"--session-id", sessionID,
+		"--site-id", siteID,
+		"--token", token,
+	}
+	effectiveUser := username
+	if effectiveUser != "" && effectiveUser != "anonymous" {
+		args = append(args, "--user", effectiveUser)
+	}
+	if baseFolder != "" {
+		args = append(args, "--base-folder", baseFolder)
+	}
+
+	slog.Info("Spawning carta-list process", "configuredPath", executablePath, "resolvedPath", resolvedExec, "requestedUsername", username, "effectiveUser", effectiveUser, "args", args)
+
+	var cmd *exec.Cmd
+	if effectiveUser == "" || effectiveUser == "anonymous" {
+		slog.Warn("Launching carta-list as current spawner user because requested user is empty or anonymous", "requestedUsername", username)
+		cmd = exec.CommandContext(ctx, resolvedExec, args...)
+	} else {
+		cmd = exec.CommandContext(ctx, "sudo", append([]string{"-u", effectiveUser, resolvedExec}, args...)...)
+	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start carta-list with executable %q for requested user %q (effective user %q): %w", resolvedExec, username, effectiveUser, err)
+	}
+	return cmd, nil
 }

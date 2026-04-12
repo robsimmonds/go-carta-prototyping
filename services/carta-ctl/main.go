@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -33,6 +34,17 @@ var (
 	runtimeSpawnerAddress string
 	pamAuth               pamwrap.Authenticator
 )
+
+
+type cartaListRegistration struct {
+	SessionID string `json:"sessionId"`
+	SiteID    string `json:"siteId"`
+	Username  string `json:"username"`
+	Token     string `json:"token"`
+	Pid       int    `json:"pid"`
+}
+
+var cartaListRegistrations sync.Map
 
 var upgrader = websocket.Upgrader{
 	// Ignore Origin header
@@ -93,7 +105,13 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, _ := r.Context().Value(session.UserContextKey).(*auth.User)
 
-	s := session.NewSession(c, runtimeSpawnerAddress, user)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	callbackBaseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+
+	s := session.NewSession(c, runtimeSpawnerAddress, callbackBaseURL, user)
 	slog.Info("Created new session", "user", user)
 
 	// Send messages back to client through websocket
@@ -409,6 +427,26 @@ func main() {
 		}
 	}
 	http.Handle("/config", http.HandlerFunc(cfgHandler))
+	http.Handle("/api/carta-list/register", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req cartaListRegistration
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.SessionID == "" || req.Username == "" {
+			http.Error(w, "missing sessionId or username", http.StatusBadRequest)
+			return
+		}
+		cartaListRegistrations.Store(req.SessionID, req)
+		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Controller.Hostname, cfg.Controller.Port)
 

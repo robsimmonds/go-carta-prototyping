@@ -27,6 +27,10 @@ type WorkerInfo struct {
 	Port    int
 }
 
+type ListInfo struct {
+	Process *exec.Cmd
+}
+
 func main() {
 	logger := helpers.NewLogger("carta-spawn", "info")
 	slog.SetDefault(logger)
@@ -39,6 +43,7 @@ func main() {
 	pflag.Int("port", 8080, "HTTP server port")
 	pflag.String("hostname", "", "Hostname to listen on")
 	pflag.String("worker_exec", "carta_backend", "Path to worker executable")
+	pflag.String("list_exec", "carta-list", "Path to carta-list executable")
 	pflag.String("base_dir", "", "Starting directory for data")
 	pflag.String("top_level_dir", "", "Top-level directory for data")
 	pflag.Int("timeout", 5, "Spawn timeout in seconds")
@@ -51,6 +56,7 @@ func main() {
 		"port":          "spawner.port",
 		"hostname":      "spawner.hostname",
 		"worker_exec":   "spawner.worker_exec",
+		"list_exec":     "spawner.list_exec",
 		"timeout":       "spawner.timeout",
 		"base_dir":      "spawner.base_dir",
 		"top_level_dir": "spawner.top_level_dir",
@@ -67,6 +73,7 @@ func main() {
 	defer stop()
 
 	workerMap := make(map[string]*WorkerInfo)
+	listMap := make(map[string]*ListInfo)
 
 	r := http.NewServeMux()
 
@@ -122,6 +129,61 @@ func main() {
 
 		httpHelpers.WriteOutput(w, map[string]any{"port": port, "address": workerHostname, "workerId": workerId.String()})
 	}))
+
+
+// Start a new carta-list process
+r.Handle("POST /carta-list", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var reqBody struct {
+		Username   string `json:"username"`
+		SessionID  string `json:"sessionId"`
+		SiteID     string `json:"siteId"`
+		Token      string `json:"token"`
+		CtlAddress string `json:"ctlAddress"`
+		BaseFolder string `json:"baseFolder"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		slog.Error("Error decoding carta-list request body", "error", err)
+		httpHelpers.WriteError(w, http.StatusBadRequest, "Error decoding request body")
+		return
+	}
+	if reqBody.Username == "" || reqBody.SessionID == "" || reqBody.CtlAddress == "" {
+		httpHelpers.WriteError(w, http.StatusBadRequest, "username, sessionId and ctlAddress are required")
+		return
+	}
+	if reqBody.Username == "anonymous" {
+		slog.Warn("Allowing anonymous carta-list startup for local/dev session; process will run as current spawner user")
+	}
+	listExec := pflag.Lookup("list_exec").Value.String()
+	slog.Info("Received carta-list startup request", "username", reqBody.Username, "sessionId", reqBody.SessionID, "siteId", reqBody.SiteID, "configuredListExec", listExec)
+	cmd, err := processHelpers.SpawnCartaList(ctx, listExec, reqBody.Username, reqBody.CtlAddress, reqBody.SessionID, reqBody.SiteID, reqBody.Token, reqBody.BaseFolder)
+	if err != nil {
+		slog.Error("Error spawning carta-list", "error", err)
+		httpHelpers.WriteError(w, http.StatusInternalServerError, "Error spawning carta-list")
+		return
+	}
+	listID := uuid.New().String()
+	listMap[listID] = &ListInfo{Process: cmd}
+	httpHelpers.WriteOutput(w, map[string]any{"listId": listID, "pid": cmd.Process.Pid})
+}))
+
+// Stop a specific carta-list process
+r.Handle("DELETE /carta-list/{id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listID, _ := url.PathUnescape(r.PathValue("id"))
+	info := listMap[listID]
+	if info == nil {
+		httpHelpers.WriteError(w, http.StatusNotFound, "carta-list not found")
+		return
+	}
+	if info.Process != nil && info.Process.Process != nil {
+		if err := info.Process.Process.Kill(); err != nil {
+			slog.Error("Error stopping carta-list", "error", err)
+			httpHelpers.WriteError(w, http.StatusInternalServerError, "Error stopping carta-list")
+			return
+		}
+	}
+	delete(listMap, listID)
+	httpHelpers.WriteOutput(w, map[string]any{"msg": "carta-list stopped"})
+}))
 
 	// List all workers
 	r.Handle("GET /workers", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +310,17 @@ func main() {
 			}
 		}
 		delete(workerMap, id)
+	}
+
+	for id, l := range listMap {
+		if l.Process != nil && l.Process.Process != nil {
+			if err := l.Process.Process.Signal(syscall.SIGTERM); err != nil {
+				slog.Error("Error sending SIGTERM to carta-list process", "error", err)
+			} else {
+				_, _ = l.Process.Process.Wait()
+			}
+		}
+		delete(listMap, id)
 	}
 
 	// Shutdown the HTTP server

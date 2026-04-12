@@ -2,9 +2,11 @@ package session
 
 import (
 	"log/slog"
+	"strconv"
 
 	"github.com/CARTAvis/go-carta/pkg/cartaDefinitions"
 	"github.com/CARTAvis/go-carta/services/carta-ctl/internal/cartaHelpers"
+	"github.com/CARTAvis/go-carta/services/carta-ctl/internal/spawnerHelpers"
 )
 
 // RegisterViewer is the first message we receive from the frontend.
@@ -18,7 +20,25 @@ func (s *Session) handleRegisterViewerMessage(_ cartaDefinitions.EventType, requ
 		return err
 	}
 
-	slog.Info("Register viewer in idle mode; not starting worker", "sessionId", payload.SessionId, "username", s.User.Username)
+	sessionID := strconv.FormatUint(uint64(payload.SessionId), 10)
+	s.SessionID = sessionID
+	slog.Info("Register viewer in idle mode; starting carta-list instead of worker", "sessionId", payload.SessionId, "username", s.User.Username)
+	if s.User != nil && s.User.Username != "" {
+		listInfo, startErr := spawnerHelpers.RequestCartaListStartup(s.SpawnerAddress, spawnerHelpers.ListStartupRequest{
+			Username:    s.User.Username,
+			SessionID:   sessionID,
+			SiteID:      "home",
+			Token:       sessionID,
+			CtlAddress:  s.CallbackBaseURL,
+			BaseFolder:  ".",
+		})
+		if startErr != nil {
+			slog.Warn("Failed to start carta-list", "error", startErr, "username", s.User.Username)
+		} else {
+			s.CartaListInfo = listInfo
+			slog.Info("Requested carta-list startup", "listId", listInfo.ListId, "pid", listInfo.Pid, "sessionId", payload.SessionId)
+		}
+	}
 
 	ack := &cartaDefinitions.RegisterViewerAck{
 		SessionId:          payload.SessionId,

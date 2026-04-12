@@ -163,3 +163,74 @@ func RequestWorkerShutdown(workerId string, spawnerAddress string) error {
 
 	return nil
 }
+
+
+type ListStartupRequest struct {
+	Username   string `json:"username"`
+	SessionID  string `json:"sessionId"`
+	SiteID     string `json:"siteId"`
+	Token      string `json:"token"`
+	CtlAddress string `json:"ctlAddress"`
+	BaseFolder string `json:"baseFolder"`
+}
+
+type ListProcessInfo struct {
+	ListId  string `json:"listId"`
+	Pid     int    `json:"pid"`
+	Address string `json:"address,omitempty"`
+}
+
+func RequestCartaListStartup(spawnerAddress string, request ListStartupRequest) (ListProcessInfo, error) {
+	url := fmt.Sprintf("%s/carta-list", spawnerAddress)
+	body, err := json.Marshal(request)
+	if err != nil {
+		return ListProcessInfo{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return ListProcessInfo{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ListProcessInfo{}, err
+	}
+	defer helpers.CloseOrLog(resp.Body)
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ListProcessInfo{}, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		var info ListProcessInfo
+		if err := json.Unmarshal(responseBody, &info); err != nil {
+			return ListProcessInfo{}, err
+		}
+		return info, nil
+	}
+	var errorResponse ErrorResponse
+	if err := json.Unmarshal(responseBody, &errorResponse); err != nil {
+		return ListProcessInfo{}, err
+	}
+	return ListProcessInfo{}, fmt.Errorf("failed to start carta-list: %s", errorResponse.ErrorMessage)
+}
+
+func RequestCartaListShutdown(listId string, spawnerAddress string) error {
+	url := fmt.Sprintf("%s/carta-list/%s", spawnerAddress, listId)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer helpers.CloseOrLog(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return errors.New("failed to shutdown carta-list")
+	}
+	return nil
+}
