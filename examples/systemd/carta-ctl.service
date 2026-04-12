@@ -1,0 +1,16 @@
+[Unit]
+Description=CARTA control-plane service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=carta
+Group=carta
+ExecStart=/usr/local/bin/carta-ctl --config /etc/carta/carta-ctl.yaml
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

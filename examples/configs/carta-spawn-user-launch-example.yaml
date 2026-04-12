@@ -1,0 +1,22 @@
+listen_address: 127.0.0.1:8091
+
+launcher:
+  mode: local-user-launch
+  worker_exec: /usr/local/bin/carta-list
+  run_as_authenticated_user: true
+  require_trusted_ctl: true
+  audit_log: /var/log/carta/spawn-audit.log
+
+identity_mapping:
+  mode: direct-local-account
+  allow_numeric_uid: false
+  permitted_groups:
+    - carta-users
+
+environment:
+  preserve:
+    - LANG
+    - LC_ALL
+  set:
+    CARTA_SITE_MODE: multisite
+    CARTA_RUNTIME_ROLE: per-user

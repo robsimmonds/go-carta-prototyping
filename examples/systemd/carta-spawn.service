@@ -1,0 +1,16 @@
+[Unit]
+Description=CARTA spawner service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=carta
+Group=carta
+ExecStart=/usr/local/bin/carta-spawn --config /etc/carta/carta-spawn.yaml
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
