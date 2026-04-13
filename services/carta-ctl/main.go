@@ -36,7 +36,6 @@ var (
 	pamAuth               pamwrap.Authenticator
 )
 
-
 type cartaListRegistration struct {
 	SessionID string `json:"sessionId"`
 	SiteID    string `json:"siteId"`
@@ -46,7 +45,6 @@ type cartaListRegistration struct {
 }
 
 var cartaListRegistrations sync.Map
-
 
 func initServiceLogger(service, level string) *slog.Logger {
 	logDir := "/var/log/carta"
@@ -180,11 +178,14 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		slog.Info("Dispatching binary client message", "len", len(message), "remoteAddr", r.RemoteAddr)
 		go func() {
 			err := s.HandleMessage(message)
 			if err != nil {
-				slog.Warn("Failed to handle message", "error", err)
+				slog.Warn("Failed to handle message", "error", err, "len", len(message), "remoteAddr", r.RemoteAddr)
+				return
 			}
+			slog.Info("Handled binary client message successfully", "len", len(message), "remoteAddr", r.RemoteAddr)
 		}()
 	}
 
@@ -540,11 +541,17 @@ func main() {
 
 		cartaListRegistrations.Store(req.SessionID, req)
 		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr, "body", string(body))
+
+		cartaListRegistrations.Range(func(k, v any) bool {
+			slog.Info("carta-list registration snapshot", "sessionId", k, "value", v)
+			return true
+		})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	http.Handle("/api/carta-list/register", registerCartaListHandler)
 	http.Handle("/api/internal/carta-list/register", registerCartaListHandler)
+
 	http.Handle("/api/debug/carta-lists", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lists := []any{}
 		cartaListRegistrations.Range(func(k, v any) bool {

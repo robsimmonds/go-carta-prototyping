@@ -25,12 +25,12 @@ func (s *Session) handleRegisterViewerMessage(_ cartaDefinitions.EventType, requ
 	slog.Info("Register viewer in idle mode; starting carta-list instead of worker", "sessionId", payload.SessionId, "username", s.User.Username)
 	if s.User != nil && s.User.Username != "" {
 		listInfo, startErr := spawnerHelpers.RequestCartaListStartup(s.SpawnerAddress, spawnerHelpers.ListStartupRequest{
-			Username:    s.User.Username,
-			SessionID:   sessionID,
-			SiteID:      "home",
-			Token:       sessionID,
-			CtlAddress:  s.CallbackBaseURL,
-			BaseFolder:  ".",
+			Username:   s.User.Username,
+			SessionID:  sessionID,
+			SiteID:     "home",
+			Token:      sessionID,
+			CtlAddress: s.CallbackBaseURL,
+			BaseFolder: ".",
 		})
 		if startErr != nil {
 			slog.Warn("Failed to start carta-list", "error", startErr, "username", s.User.Username)
