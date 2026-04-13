@@ -488,22 +488,75 @@ func main() {
 			return
 		}
 
-		var req cartaListRegistration
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			slog.Error("Failed to read carta-list registration body", "error", err, "path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+
+		var req cartaListRegistration
+		if err := json.Unmarshal(body, &req); err != nil {
+			slog.Error("Failed to decode carta-list registration", "error", err, "body", string(body), "path", r.URL.Path, "remote", r.RemoteAddr)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
 		if req.SessionID == "" || req.Username == "" {
+			var raw map[string]any
+			if err := json.Unmarshal(body, &raw); err == nil {
+				if req.SessionID == "" {
+					for _, k := range []string{"sessionId", "sessionID", "session_id"} {
+						if v, ok := raw[k].(string); ok && v != "" {
+							req.SessionID = v
+							break
+						}
+					}
+				}
+				if req.SiteID == "" {
+					for _, k := range []string{"siteId", "siteID", "site_id"} {
+						if v, ok := raw[k].(string); ok && v != "" {
+							req.SiteID = v
+							break
+						}
+					}
+				}
+				if req.Username == "" {
+					for _, k := range []string{"username", "user", "userName"} {
+						if v, ok := raw[k].(string); ok && v != "" {
+							req.Username = v
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if req.SessionID == "" || req.Username == "" {
+			slog.Error("Rejected carta-list registration: missing required fields", "body", string(body), "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, "missing sessionId or username", http.StatusBadRequest)
 			return
 		}
+
 		cartaListRegistrations.Store(req.SessionID, req)
-		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr)
+		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr, "body", string(body))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	http.Handle("/api/carta-list/register", registerCartaListHandler)
 	http.Handle("/api/internal/carta-list/register", registerCartaListHandler)
+	http.Handle("/api/debug/carta-lists", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lists := []any{}
+		cartaListRegistrations.Range(func(k, v any) bool {
+			lists = append(lists, map[string]any{
+				"sessionId": k,
+				"value":     v,
+			})
+			return true
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lists)
+	}))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Controller.Hostname, cfg.Controller.Port)
 
