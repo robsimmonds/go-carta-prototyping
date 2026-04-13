@@ -541,6 +541,7 @@ func main() {
 
 		cartaListRegistrations.Store(req.SessionID, req)
 		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr, "body", string(body))
+		session.ApplyCartaListRegistration(req.SessionID, req.SiteID, req.Username, req.Token, req.Pid)
 
 		cartaListRegistrations.Range(func(k, v any) bool {
 			slog.Info("carta-list registration snapshot", "sessionId", k, "value", v)

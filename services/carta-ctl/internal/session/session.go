@@ -109,6 +109,9 @@ func (s *Session) HandleDisconnect() {
 	if s.clientSendChan != nil {
 		close(s.clientSendChan)
 	}
+	if s.SessionID != "" {
+		UnregisterLiveSession(s.SessionID)
+	}
 
 	if s.CartaListInfo.ListId != "" {
 		err := spawnerHelpers.RequestCartaListShutdown(s.CartaListInfo.ListId, s.SpawnerAddress)
