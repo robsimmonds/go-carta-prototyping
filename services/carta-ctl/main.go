@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -45,6 +46,41 @@ type cartaListRegistration struct {
 }
 
 var cartaListRegistrations sync.Map
+
+
+func initServiceLogger(service, level string) *slog.Logger {
+	logDir := "/var/log/carta"
+	logPath := filepath.Join(logDir, service+".log")
+
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fallback := helpers.NewLogger(service, level)
+		fallback.Warn("Failed to create log directory; continuing with stdout only", "dir", logDir, "error", err)
+		return fallback
+	}
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		fallback := helpers.NewLogger(service, level)
+		fallback.Warn("Failed to open log file; continuing with stdout only", "path", logPath, "error", err)
+		return fallback
+	}
+
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+
+	mw := io.MultiWriter(os.Stdout, f)
+	logger := slog.New(slog.NewTextHandler(mw, &slog.HandlerOptions{Level: lvl}))
+	return logger.With("service", service)
+}
 
 var upgrader = websocket.Upgrader{
 	// Ignore Origin header
@@ -160,10 +196,11 @@ func withAuth(a auth.Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, err := a.AuthenticateHTTP(w, r)
 		if err != nil {
-			// Expected when we just redirected to /oidc/login
-			if strings.Contains(err.Error(), "no OIDC session") {
-				// optional: log at debug level instead
-				slog.Debug("Redirecting to OIDC login")
+			// Redirect-style auth backends intentionally return an error after they
+			// have already handled the response. Avoid noisy error logs for those
+			// expected unauthenticated transitions.
+			if strings.Contains(err.Error(), "no OIDC session") || strings.Contains(err.Error(), "no valid PAM session") {
+				slog.Debug("Authentication redirect", "path", r.URL.Path, "error", err)
 				return
 			}
 			slog.Error("Auth failed", "error", err)
@@ -197,19 +234,28 @@ func pamLoginHandler(p pamwrap.Authenticator) http.Handler {
 		Title   string
 		Heading string
 		Error   string
+		Next    string
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("Handling PAM login request", "method", r.Method)
+		slog.Info("Handling PAM login request", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery, "remote", r.RemoteAddr)
 
 		switch r.Method {
 
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+
+			next := r.URL.Query().Get("next")
+			if next == "" {
+				next = "/"
+			}
+			slog.Info("Rendering PAM login page", "next", next, "remote", r.RemoteAddr)
 
 			_ = pamLoginTmpl.Execute(w, pageData{
 				Title:   "CARTA Login",
 				Heading: "CARTA Login (PAM)",
+				Next:    next,
 			})
 
 		case http.MethodPost:
@@ -220,13 +266,20 @@ func pamLoginHandler(p pamwrap.Authenticator) http.Handler {
 
 			username := r.Form.Get("username")
 			password := r.Form.Get("password")
+			next := r.Form.Get("next")
+			slog.Info("Received PAM login form", "username", username, "next", next, "remote", r.RemoteAddr)
+			if next == "" {
+				next = "/"
+			}
 
 			if username == "" || password == "" {
+				slog.Warn("PAM login missing credentials", "username", username, "next", next)
 				w.WriteHeader(http.StatusBadRequest)
 				_ = pamLoginTmpl.Execute(w, pageData{
 					Title:   "CARTA Login",
 					Heading: "CARTA Login (PAM)",
 					Error:   "Missing username or password",
+					Next:    next,
 				})
 				return
 			}
@@ -239,9 +292,11 @@ func pamLoginHandler(p pamwrap.Authenticator) http.Handler {
 					Title:   "CARTA Login",
 					Heading: "CARTA Login (PAM)",
 					Error:   "Invalid credentials",
+					Next:    next,
 				})
 				return
 			}
+			slog.Info("PAM credentials accepted", "username", user.Username, "next", next)
 			slog.Info("About to set PAM session cookie", "username", user.Username)
 
 			if err := pamwrap.SetSessionCookie(w, user.Username); err != nil {
@@ -255,8 +310,8 @@ func pamLoginHandler(p pamwrap.Authenticator) http.Handler {
 				slog.Info("Set-Cookie", "value", c)
 			}
 
-			slog.Info("Cookie set, redirecting", "to", "/")
-			http.Redirect(w, r, "/", http.StatusFound)
+			slog.Info("Cookie set, redirecting", "to", next, "username", user.Username)
+			http.Redirect(w, r, next, http.StatusSeeOther)
 
 			return
 
@@ -271,7 +326,7 @@ func pamLoginHandler(p pamwrap.Authenticator) http.Handler {
 var oidcAuth *authoidc.OIDCAuthenticator
 
 func main() {
-	logger := helpers.NewLogger("carta-ctl", "info")
+	logger := initServiceLogger("carta-ctl", "info")
 	slog.SetDefault(logger)
 
 	id := uuid.New()
@@ -311,7 +366,7 @@ func main() {
 	slog.Info("Cfg auth_mode", "cfg.Controller.AuthMode", cfg.Controller.AuthMode)
 
 	// Update the logger to use the configured log level
-	logger = helpers.NewLogger("carta-ctl", cfg.LogLevel)
+	logger = initServiceLogger("carta-ctl", cfg.LogLevel)
 	slog.SetDefault(logger)
 
 	pamLoginTmpl = template.Must(
@@ -427,7 +482,7 @@ func main() {
 		}
 	}
 	http.Handle("/config", http.HandlerFunc(cfgHandler))
-	http.Handle("/api/carta-list/register", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	registerCartaListHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -443,10 +498,12 @@ func main() {
 			return
 		}
 		cartaListRegistrations.Store(req.SessionID, req)
-		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid)
+		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}))
+	})
+	http.Handle("/api/carta-list/register", registerCartaListHandler)
+	http.Handle("/api/internal/carta-list/register", registerCartaListHandler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Controller.Hostname, cfg.Controller.Port)
 

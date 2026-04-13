@@ -81,6 +81,7 @@
         {{ end }}
 
         <form method="POST">
+          <input type="hidden" name="next" value="{{ .Next }}" />
           <div class="row">
             <label for="username">Username</label>
             <input id="username" name="username" autocomplete="username" />

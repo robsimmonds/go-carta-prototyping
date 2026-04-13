@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,8 +34,43 @@ type ListInfo struct {
 	Process *exec.Cmd
 }
 
+
+func initServiceLogger(service, level string) *slog.Logger {
+	logDir := "/var/log/carta"
+	logPath := filepath.Join(logDir, service+".log")
+
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fallback := helpers.NewLogger(service, level)
+		fallback.Warn("Failed to create log directory; continuing with stdout only", "dir", logDir, "error", err)
+		return fallback
+	}
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		fallback := helpers.NewLogger(service, level)
+		fallback.Warn("Failed to open log file; continuing with stdout only", "path", logPath, "error", err)
+		return fallback
+	}
+
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+
+	mw := io.MultiWriter(os.Stdout, f)
+	logger := slog.New(slog.NewTextHandler(mw, &slog.HandlerOptions{Level: lvl}))
+	return logger.With("service", service)
+}
+
 func main() {
-	logger := helpers.NewLogger("carta-spawn", "info")
+	logger := initServiceLogger("carta-spawn", "info")
 	slog.SetDefault(logger)
 
 	id := uuid.New()
@@ -65,7 +103,7 @@ func main() {
 	cfg := config.Load(pflag.Lookup("config").Value.String(), pflag.Lookup("override").Value.String())
 
 	// Update the logger to use the configured log level
-	logger = helpers.NewLogger("carta-spawn", cfg.LogLevel)
+	logger = initServiceLogger("carta-spawn", cfg.LogLevel)
 	slog.SetDefault(logger)
 
 	// Global context that cancels all spawned processes on SIGINT/SIGTERM

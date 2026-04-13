@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/msteinert/pam"
@@ -58,21 +59,31 @@ func (p *PAMAuthenticator) AuthenticateCredentials(ctx context.Context, username
 func (p *PAMAuthenticator) AuthenticateHTTP(w http.ResponseWriter, r *http.Request) (*auth.User, error) {
 	// 1. Check session cookie
 	if c, err := r.Cookie("carta_session"); err == nil {
+		log.Printf("PAM session cookie received path=%s remote=%s value_len=%d", r.URL.Path, r.RemoteAddr, len(c.Value))
 		username, err := auth.VerifySessionToken(c.Value)
 		if err == nil {
+			log.Printf("PAM session cookie accepted path=%s user=%s", r.URL.Path, username)
 			return &auth.User{
 				Username: username,
 				Source:   auth.SourcePAM,
 				Claims:   map[string]any{},
 			}, nil
 		}
-		log.Printf("PAM session cookie invalid: %v", err)
+		log.Printf("PAM session cookie invalid path=%s remote=%s err=%v", r.URL.Path, r.RemoteAddr, err)
+		clearPAMSessionCookie(w)
+	} else {
+		log.Printf("PAM session cookie missing path=%s remote=%s err=%v", r.URL.Path, r.RemoteAddr, err)
 	}
 
 	// 2. No valid session → redirect to login page
 	// Avoid infinite loop: don't redirect /pam-login to itself.
 	if r.URL.Path != "/pam-login" {
-		http.Redirect(w, r, "/pam-login", http.StatusFound)
+		next := r.URL.RequestURI()
+		if next == "" {
+			next = "/"
+		}
+		log.Printf("PAM redirecting unauthenticated request path=%s next=%s", r.URL.Path, next)
+		http.Redirect(w, r, "/pam-login?next="+url.QueryEscape(next), http.StatusFound)
 	} else {
 		// If somehow we get here for /pam-login itself, just let the handler deal with it.
 		w.WriteHeader(http.StatusUnauthorized)
@@ -96,6 +107,20 @@ func SetPAMSessionCookie(w http.ResponseWriter, username string) error {
 		Secure:   false, // set true if serving over HTTPS
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiry,
+		MaxAge:   int((8 * time.Hour).Seconds()),
 	})
 	return nil
+}
+
+func clearPAMSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "carta_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
 }
