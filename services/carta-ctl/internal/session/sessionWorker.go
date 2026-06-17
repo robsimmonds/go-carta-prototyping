@@ -17,7 +17,7 @@ type SessionWorker struct {
 	requestId      uint32
 	conn           *websocket.Conn
 	sendChan       chan []byte
-	clientSendChan chan []byte
+	clientSendChan chan outboundMessage
 }
 
 func (sw *SessionWorker) proxyMessageToWorker(msg proto.Message, eventType cartaDefinitions.EventType, requestId uint32) error {
@@ -91,7 +91,7 @@ func (sw *SessionWorker) workerMessageHandler() {
 			} else {
 				// TODO: We will often need to adjust responses here
 				// Pass the incoming message along to the client
-				sw.clientSendChan <- message
+				sw.clientSendChan <- outboundMessage{messageType: websocket.BinaryMessage, data: message}
 			}
 		}()
 	}

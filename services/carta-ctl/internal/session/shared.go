@@ -24,6 +24,28 @@ func sendHandler(channel <-chan []byte, conn *websocket.Conn, name string) {
 	slog.Debug("Send handler exiting", "name", name)
 }
 
+// outboundMessage is a frame to send to the client. The client send path carries
+// both binary CARTA messages and text control messages (e.g. site status), so it
+// needs the websocket message type alongside the payload.
+type outboundMessage struct {
+	messageType int
+	data        []byte
+}
+
+// clientSendHandler is the single writer for the client websocket. Being the
+// sole writer keeps concurrent gorilla writes safe while still allowing both
+// binary and text frames.
+func clientSendHandler(channel <-chan outboundMessage, conn *websocket.Conn, name string) {
+	slog.Debug("Starting client send handler", "name", name)
+	for msg := range channel {
+		if err := conn.WriteMessage(msg.messageType, msg.data); err != nil {
+			slog.Error("Error sending message to client", "name", name, "error", err)
+			// Continue processing other messages even if one fails
+		}
+	}
+	slog.Debug("Client send handler exiting", "name", name)
+}
+
 // handleProxiedMessage proxies unhandled messages to the appropriate worker.
 // Messages that target an opened file go to that file's worker; everything else
 // (notably FILE_LIST_REQUEST) goes to the shared listing worker. If the shared

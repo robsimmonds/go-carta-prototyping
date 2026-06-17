@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/CARTAvis/go-carta/pkg/cartaDefinitions"
 	"github.com/CARTAvis/go-carta/services/carta-ctl/internal/cartaHelpers"
 	"github.com/CARTAvis/go-carta/services/carta-ctl/internal/spawnerHelpers"
@@ -61,6 +63,6 @@ func (s *Session) handleRegisterViewerMessage(_ cartaDefinitions.EventType, requ
 		return err
 	}
 
-	s.clientSendChan <- reply
+	s.clientSendChan <- outboundMessage{messageType: websocket.BinaryMessage, data: reply}
 	return nil
 }

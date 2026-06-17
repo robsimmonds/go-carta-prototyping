@@ -174,11 +174,15 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Text frames (other than PING) are JSON control messages for
-		// multi-site routing; hand them to the session control handler.
+		// multi-site routing; handle them off the read loop so a slow remote
+		// dial doesn't stall the client connection.
 		if messageType == websocket.TextMessage {
-			if err := s.HandleControl(message); err != nil {
-				slog.Warn("Failed to handle control message", "error", err, "message", string(message))
-			}
+			msg := message
+			go func() {
+				if err := s.HandleControl(msg); err != nil {
+					slog.Warn("Failed to handle control message", "error", err, "message", string(msg))
+				}
+			}()
 			continue
 		}
 

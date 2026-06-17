@@ -30,7 +30,7 @@ type Session struct {
 	Context         context.Context
 	Cancel          context.CancelFunc
 
-	clientSendChan chan []byte
+	clientSendChan chan outboundMessage
 	// maps incoming file IDs to the internal IDs of the workers
 	fileMap map[int32]*SessionWorker
 
@@ -95,8 +95,8 @@ func (s *Session) checkAndParse(msg proto.Message, requestId uint32, rawMsg []by
 }
 
 func (s *Session) HandleConnection() {
-	s.clientSendChan = make(chan []byte, 100)
-	go sendHandler(s.clientSendChan, s.WebSocket, "client")
+	s.clientSendChan = make(chan outboundMessage, 100)
+	go clientSendHandler(s.clientSendChan, s.WebSocket, "client")
 }
 
 func (s *Session) HandleMessage(msg []byte) error {

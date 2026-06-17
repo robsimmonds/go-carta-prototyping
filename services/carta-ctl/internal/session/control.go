@@ -54,6 +54,28 @@ func (s *Session) selectSite(id string) {
 	slog.Info("Selected site for proxied traffic", "siteId", id, "sessionId", s.SessionID)
 }
 
+// siteStatusMessage is pushed to the client (as a text frame) to report the
+// live state of a site so the GUI can show the real connection status.
+type siteStatusMessage struct {
+	Control    string `json:"control"` // always "site.status"
+	ID         string `json:"id"`
+	Connected  bool   `json:"connected"`
+	HasListing bool   `json:"hasListing"`
+}
+
+// sendSiteStatus pushes a site status update to the client over the single
+// socket. It is safe to call from site-connection goroutines; the recover
+// guards against the session tearing down (client channel closed).
+func (s *Session) sendSiteStatus(id string, connected, hasListing bool) {
+	data, err := json.Marshal(siteStatusMessage{Control: "site.status", ID: id, Connected: connected, HasListing: hasListing})
+	if err != nil {
+		slog.Error("Failed to marshal site status", "error", err, "siteId", id)
+		return
+	}
+	defer func() { _ = recover() }()
+	s.clientSendChan <- outboundMessage{messageType: websocket.TextMessage, data: data}
+}
+
 // toWebSocketURL normalises a site address into a websocket URL pointing at the
 // remote carta-ctl client endpoint.
 func toWebSocketURL(address string) string {
@@ -84,6 +106,7 @@ func (s *Session) connectRemoteSite(id, address string) error {
 
 	conn, _, err := websocket.DefaultDialer.DialContext(s.Context, addr, nil)
 	if err != nil {
+		s.sendSiteStatus(id, false, false)
 		return fmt.Errorf("dial remote site at %s: %w", addr, err)
 	}
 
@@ -96,6 +119,7 @@ func (s *Session) connectRemoteSite(id, address string) error {
 	reg := &cartaDefinitions.RegisterViewer{SessionId: 0, ClientFeatureFlags: 0}
 	if err := worker.proxyMessageToWorker(reg, cartaDefinitions.EventType_REGISTER_VIEWER, 1); err != nil {
 		worker.disconnect()
+		s.sendSiteStatus(id, false, false)
 		return fmt.Errorf("register viewer with remote site %q: %w", id, err)
 	}
 
@@ -111,5 +135,6 @@ func (s *Session) connectRemoteSite(id, address string) error {
 	s.mu.Unlock()
 
 	slog.Info("Connected remote site", "siteId", id, "address", addr, "sessionId", s.SessionID)
+	s.sendSiteStatus(id, true, true)
 	return nil
 }
