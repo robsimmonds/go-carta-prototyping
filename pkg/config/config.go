@@ -48,6 +48,7 @@ type ControllerConfig struct {
 
 type SpawnerConfig struct {
 	WorkerExec  string        `mapstructure:"worker_exec"`
+	ListExec    string        `mapstructure:"list_exec"`
 	Timeout     time.Duration `mapstructure:"timeout"`
 	Port        int           `mapstructure:"port"`
 	Hostname    string        `mapstructure:"hostname"`
@@ -84,6 +85,7 @@ func setControllerDefaults(v *viper.Viper) {
 
 func setSpawnerDefaults(v *viper.Viper) {
 	v.SetDefault("spawner.worker_exec", "carta-worker")
+	v.SetDefault("spawner.list_exec", "carta-list")
 	v.SetDefault("spawner.timeout", 5*time.Second)
 	v.SetDefault("spawner.port", 8080)
 	v.SetDefault("spawner.hostname", "")

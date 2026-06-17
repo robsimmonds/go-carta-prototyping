@@ -42,9 +42,27 @@ func parsePortFromLine(line string) (int, bool) {
 // -port=0 so the OS selects a free port, and the detected port from the log is
 // returned.
 func SpawnWorker(ctx context.Context, workerPath string, timeoutDuration time.Duration, username string, baseDirTmpl string, topLevelDir string) (*exec.Cmd, int, error) {
-	user, err := user.Lookup(username)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to lookup user %s: %w", username, err)
+	// Decide whether to run the worker directly as the current (spawner) user
+	// or via `sudo -u <username>`. As with carta-list, an empty or "anonymous"
+	// username means "run as me" — useful for single-user prototyping (e.g.
+	// macOS) where sudo/user-switching isn't configured.
+	runAsSelf := username == "" || username == "anonymous"
+
+	var (
+		usr *user.User
+		err error
+	)
+	if runAsSelf {
+		usr, err = user.Current()
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to look up current user: %w", err)
+		}
+		slog.Warn("Launching worker as current spawner user because requested user is empty or anonymous", "requestedUsername", username, "effectiveUser", usr.Username)
+	} else {
+		usr, err = user.Lookup(username)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to lookup user %s: %w", username, err)
+		}
 	}
 
 	args := []string{"--debug_no_auth"}
@@ -60,7 +78,7 @@ func SpawnWorker(ctx context.Context, workerPath string, timeoutDuration time.Du
 	}
 
 	// Adding as a positional argument so startup folder should be last option
-	if strings.Contains(baseDirTmpl, "{{.home}}") && user.HomeDir == "" {
+	if strings.Contains(baseDirTmpl, "{{.home}}") && usr.HomeDir == "" {
 		slog.Warn("base_dir_tmpl references {{.home}} but user has no home directory. Omitting starting directory", "username", username)
 	} else if baseDirTmpl != "" {
 		var buf bytes.Buffer
@@ -70,8 +88,8 @@ func SpawnWorker(ctx context.Context, workerPath string, timeoutDuration time.Du
 		}
 
 		err = tmpl.Execute(&buf, map[string]string{
-			"user": username,
-			"home": user.HomeDir,
+			"user": usr.Username,
+			"home": usr.HomeDir,
 		})
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to execute base_dir_tmpl: %w", err)
@@ -90,7 +108,17 @@ func SpawnWorker(ctx context.Context, workerPath string, timeoutDuration time.Du
 
 	slog.Info("Spawning worker process", "workerPath", workerPath, "username", username, "args", args)
 
-	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-u", username, workerPath}, args...)...)
+	var cmd *exec.Cmd
+	if runAsSelf {
+		// Run directly as the current user — no sudo, no user switching.
+		resolvedExec, rerr := resolveExecutablePath(workerPath)
+		if rerr != nil {
+			resolvedExec = workerPath
+		}
+		cmd = exec.CommandContext(ctx, resolvedExec, args...)
+	} else {
+		cmd = exec.CommandContext(ctx, "sudo", append([]string{"-u", username, workerPath}, args...)...)
+	}
 
 	// Capture stdout/stderr so we can watch for the readiness log while still
 	// forwarding output to the parent process' stdio.
