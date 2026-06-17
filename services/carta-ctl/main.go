@@ -173,6 +173,15 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Text frames (other than PING) are JSON control messages for
+		// multi-site routing; hand them to the session control handler.
+		if messageType == websocket.TextMessage {
+			if err := s.HandleControl(message); err != nil {
+				slog.Warn("Failed to handle control message", "error", err, "message", string(message))
+			}
+			continue
+		}
+
 		// Ignore all other non-binary messages
 		if messageType != websocket.BinaryMessage {
 			slog.Warn("Ignoring non-binary message", "type", messageType, "message", message)

@@ -34,15 +34,21 @@ type Session struct {
 	// maps incoming file IDs to the internal IDs of the workers
 	fileMap map[int32]*SessionWorker
 
-	// mu guards sharedWorker and pendingShared, which are written from the
-	// carta-list registration callback (a separate HTTP goroutine) and read
-	// from the websocket message loop.
+	// mu guards sharedWorker, pendingShared, selectedSite and siteWorkers,
+	// which are written from out-of-band goroutines (carta-list registration
+	// callback, control-message handling) and read from the websocket loop.
 	mu           sync.Mutex
 	sharedWorker *SessionWorker
 	// pendingShared buffers proxied messages (e.g. FILE_LIST_REQUEST) that
 	// arrive before the shared listing worker has connected. They are flushed
 	// in order once it is ready.
 	pendingShared [][]byte
+	// selectedSite is the site that non-file-specific proxied traffic (file
+	// listing) is routed to. "" or "home" means the local shared worker.
+	selectedSite string
+	// siteWorkers holds connections to remote carta-ctl sites, keyed by site id.
+	// "home" is not stored here — it uses sharedWorker.
+	siteWorkers map[string]*SessionWorker
 }
 
 var handlerMap = map[cartaDefinitions.EventType]func(*Session, cartaDefinitions.EventType, uint32, []byte) error{
@@ -132,14 +138,22 @@ func (s *Session) HandleDisconnect() {
 		}
 	}
 
-	// Tear down the shared listing worker (the carta_backend behind carta-list).
-	// This runs regardless of whether a per-file worker exists.
+	// Tear down the shared listing worker (the carta_backend behind carta-list)
+	// and any remote site connections. Runs regardless of per-file workers.
 	s.mu.Lock()
 	shared := s.sharedWorker
 	s.sharedWorker = nil
+	sites := s.siteWorkers
+	s.siteWorkers = nil
 	s.mu.Unlock()
 	if shared != nil {
 		shared.disconnect()
+	}
+	for id, w := range sites {
+		if w != nil {
+			slog.Info("Disconnecting remote site", "siteId", id)
+			w.disconnect()
+		}
 	}
 
 	if s.Info.WorkerId == "" {

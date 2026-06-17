@@ -41,18 +41,32 @@ func (s *Session) handleProxiedMessage(eventType cartaDefinitions.EventType, req
 		}
 	}
 
-	// Otherwise route to the shared listing worker, buffering if it isn't ready.
+	// Otherwise route to the selected site. "home"/"" uses the local shared
+	// listing worker (buffering until it is ready); a remote site uses its
+	// per-session connection.
 	s.mu.Lock()
-	if s.sharedWorker == nil {
-		s.pendingShared = append(s.pendingShared, messageBytes)
+	site := s.selectedSite
+	if site == "" || site == "home" {
+		if s.sharedWorker == nil {
+			s.pendingShared = append(s.pendingShared, messageBytes)
+			s.mu.Unlock()
+			slog.Debug("Buffered message until shared listing worker is ready", "eventType", eventType, "requestId", requestId)
+			return nil
+		}
+		worker := s.sharedWorker
 		s.mu.Unlock()
-		slog.Debug("Buffered message until shared listing worker is ready", "eventType", eventType, "requestId", requestId)
+		slog.Debug("Proxying message to home shared listing worker", "eventType", eventType, "requestId", requestId)
+		worker.sendChan <- messageBytes
 		return nil
 	}
-	worker := s.sharedWorker
-	s.mu.Unlock()
 
-	slog.Debug("Proxying message to shared listing worker", "eventType", eventType, "requestId", requestId)
+	worker := s.siteWorkers[site]
+	s.mu.Unlock()
+	if worker == nil {
+		slog.Warn("Dropping proxied message: selected site has no connection", "site", site, "eventType", eventType, "requestId", requestId)
+		return nil
+	}
+	slog.Debug("Proxying message to remote site", "site", site, "eventType", eventType, "requestId", requestId)
 	worker.sendChan <- messageBytes
 	return nil
 }
