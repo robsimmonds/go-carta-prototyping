@@ -37,11 +37,12 @@ var (
 )
 
 type cartaListRegistration struct {
-	SessionID string `json:"sessionId"`
-	SiteID    string `json:"siteId"`
-	Username  string `json:"username"`
-	Token     string `json:"token"`
-	Pid       int    `json:"pid"`
+	SessionID      string `json:"sessionId"`
+	SiteID         string `json:"siteId"`
+	Username       string `json:"username"`
+	Token          string `json:"token"`
+	Pid            int    `json:"pid"`
+	BackendAddress string `json:"backendAddress"`
 }
 
 var cartaListRegistrations sync.Map
@@ -541,7 +542,7 @@ func main() {
 
 		cartaListRegistrations.Store(req.SessionID, req)
 		slog.Info("Registered carta-list", "sessionId", req.SessionID, "siteId", req.SiteID, "username", req.Username, "pid", req.Pid, "path", r.URL.Path, "remote", r.RemoteAddr, "body", string(body))
-		session.ApplyCartaListRegistration(req.SessionID, req.SiteID, req.Username, req.Token, req.Pid)
+		session.ApplyCartaListRegistration(req.SessionID, req.SiteID, req.Username, req.Token, req.BackendAddress, req.Pid)
 
 		cartaListRegistrations.Range(func(k, v any) bool {
 			slog.Info("carta-list registration snapshot", "sessionId", k, "value", v)

@@ -84,6 +84,10 @@ func (sw *SessionWorker) workerMessageHandler() {
 				if err != nil {
 					slog.Error("Error proxying open file message to worker", "error", err)
 				}
+			} else if sw.fileRequest == nil && prefix.EventType == cartaDefinitions.EventType_REGISTER_VIEWER_ACK {
+				// Shared listing worker: the client already received a
+				// REGISTER_VIEWER_ACK from carta-ctl, so don't forward a duplicate.
+				slog.Debug("Swallowing shared listing worker REGISTER_VIEWER_ACK", "workerName", workerName)
 			} else {
 				// TODO: We will often need to adjust responses here
 				// Pass the incoming message along to the client

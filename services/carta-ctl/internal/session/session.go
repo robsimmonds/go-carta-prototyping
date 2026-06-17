@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -31,8 +32,17 @@ type Session struct {
 
 	clientSendChan chan []byte
 	// maps incoming file IDs to the internal IDs of the workers
-	fileMap      map[int32]*SessionWorker
+	fileMap map[int32]*SessionWorker
+
+	// mu guards sharedWorker and pendingShared, which are written from the
+	// carta-list registration callback (a separate HTTP goroutine) and read
+	// from the websocket message loop.
+	mu           sync.Mutex
 	sharedWorker *SessionWorker
+	// pendingShared buffers proxied messages (e.g. FILE_LIST_REQUEST) that
+	// arrive before the shared listing worker has connected. They are flushed
+	// in order once it is ready.
+	pendingShared [][]byte
 }
 
 var handlerMap = map[cartaDefinitions.EventType]func(*Session, cartaDefinitions.EventType, uint32, []byte) error{
@@ -122,13 +132,18 @@ func (s *Session) HandleDisconnect() {
 		}
 	}
 
-	if s.Info.WorkerId == "" {
-		return
+	// Tear down the shared listing worker (the carta_backend behind carta-list).
+	// This runs regardless of whether a per-file worker exists.
+	s.mu.Lock()
+	shared := s.sharedWorker
+	s.sharedWorker = nil
+	s.mu.Unlock()
+	if shared != nil {
+		shared.disconnect()
 	}
 
-	// Close the worker channel to signal the sender goroutine to stop
-	if s.sharedWorker != nil {
-		s.sharedWorker.disconnect()
+	if s.Info.WorkerId == "" {
+		return
 	}
 
 	err := spawnerHelpers.RequestWorkerShutdown(s.Info.WorkerId, s.SpawnerAddress)

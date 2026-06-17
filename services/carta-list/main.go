@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -9,7 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,20 +21,27 @@ import (
 )
 
 type Config struct {
-	CtlAddress string
-	SiteID     string
-	SessionID  string
-	User       string
-	Token      string
-	BaseFolder string
-	ConfigPath string
-	LogLevel   string
-	LogDir     string
-	AlsoStdout bool
+	CtlAddress  string
+	SiteID      string
+	SessionID   string
+	User        string
+	Token       string
+	BaseFolder  string
+	ConfigPath  string
+	LogLevel    string
+	LogDir      string
+	AlsoStdout  bool
+	WorkerExec  string
+	TopLevelDir string
 }
 
 type Service struct {
 	cfg Config
+	// backendAddress is the host:port of the carta_backend instance this
+	// carta-list spawned to answer listing messages. It is reported to
+	// carta-ctl during registration so the controller can proxy file-list
+	// traffic to it. Interim measure until carta-list does listing natively.
+	backendAddress string
 }
 
 func main() {
@@ -84,6 +95,9 @@ func parseFlags() Config {
 	if cfg.LogDir == "" {
 		cfg.LogDir = "./logs"
 	}
+	if cfg.WorkerExec == "" {
+		cfg.WorkerExec = "carta_backend"
+	}
 	return cfg
 }
 
@@ -104,6 +118,8 @@ func applyConfigFile(cfg *Config) {
 		cfg.LogLevel = v.GetString("log_level")
 		cfg.LogDir = v.GetString("logging.dir")
 		cfg.AlsoStdout = v.GetBool("logging.also_stdout")
+		cfg.WorkerExec = v.GetString("spawner.worker_exec")
+		cfg.TopLevelDir = v.GetString("spawner.top_level_dir")
 	}
 }
 
@@ -146,6 +162,19 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	slog.Info("resolved base folder", "base", base)
 
+	// Interim listing strategy: spawn a carta_backend instance (as this same
+	// user) and let it answer the file-listing protocol. carta-ctl proxies
+	// FILE_LIST_REQUEST traffic to the address we report below.
+	backendCmd, err := s.startListingBackend(ctx, base)
+	if err != nil {
+		return fmt.Errorf("start listing backend: %w", err)
+	}
+	defer func() {
+		if backendCmd != nil && backendCmd.Process != nil {
+			_ = backendCmd.Process.Kill()
+		}
+	}()
+
 	if err := s.registerWithCtl(ctx); err != nil {
 		return err
 	}
@@ -168,8 +197,8 @@ func (s *Service) registerWithCtl(ctx context.Context) error {
 	_ = ctx
 
 	registerURL := strings.TrimRight(s.cfg.CtlAddress, "/") + "/api/internal/carta-list/register"
-	body := strings.NewReader(fmt.Sprintf(`{"sessionId":"%s","siteId":"%s","user":"%s","token":"%s"}`,
-		s.cfg.SessionID, s.cfg.SiteID, s.cfg.User, s.cfg.Token,
+	body := strings.NewReader(fmt.Sprintf(`{"sessionId":"%s","siteId":"%s","user":"%s","token":"%s","backendAddress":"%s"}`,
+		s.cfg.SessionID, s.cfg.SiteID, s.cfg.User, s.cfg.Token, s.backendAddress,
 	))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, registerURL, body)
@@ -188,6 +217,89 @@ func (s *Service) registerWithCtl(ctx context.Context) error {
 		return fmt.Errorf("register with carta-ctl returned status %s", resp.Status)
 	}
 
-	slog.Info("registered with carta-ctl", "url", registerURL, "status", resp.Status)
+	slog.Info("registered with carta-ctl", "url", registerURL, "status", resp.Status, "backendAddress", s.backendAddress)
 	return nil
+}
+
+// backendListenRe matches the carta_backend readiness log line and captures the
+// port it bound to.
+var backendListenRe = regexp.MustCompile(`Listening on port (\d+)`)
+
+// startListingBackend launches a carta_backend instance to serve the file
+// listing protocol and waits until it reports the port it is listening on. It
+// stores the resulting host:port in s.backendAddress and returns the running
+// command so the caller can shut it down on exit.
+func (s *Service) startListingBackend(ctx context.Context, baseDir string) (*exec.Cmd, error) {
+	exe := s.cfg.WorkerExec
+	if exe == "" {
+		exe = "carta_backend"
+	}
+
+	// These flags mirror the worker spawn in carta-spawn: no frontend, no
+	// database, driven entirely over the controller's websocket. Listing-
+	// specific backend flags belong here, in the carta-list wrapper.
+	args := []string{
+		"--debug_no_auth",
+		"--no_frontend",
+		"--no_database",
+		"--controller_deployment",
+		"--verbosity", "5",
+		"--exit_timeout", "10",
+		"--initial_timeout", "20",
+		"--idle_timeout", "300",
+	}
+	if s.cfg.TopLevelDir != "" {
+		args = append(args, "--top_level_folder", s.cfg.TopLevelDir)
+	}
+	if baseDir != "" {
+		// Positional starting directory must be last.
+		args = append(args, baseDir)
+	}
+
+	slog.Info("starting listing backend", "exe", exe, "args", args)
+	cmd := exec.CommandContext(ctx, exe, args...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("backend stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("backend stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start backend: %w", err)
+	}
+
+	portCh := make(chan int, 1)
+	watch := func(r io.Reader, w io.Writer) {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			fmt.Fprintln(w, line)
+			if m := backendListenRe.FindStringSubmatch(line); len(m) == 2 {
+				if p, perr := strconv.Atoi(m[1]); perr == nil {
+					select {
+					case portCh <- p:
+					default:
+					}
+				}
+			}
+		}
+	}
+	go watch(stdoutPipe, os.Stdout)
+	go watch(stderrPipe, os.Stderr)
+
+	select {
+	case p := <-portCh:
+		s.backendAddress = fmt.Sprintf("127.0.0.1:%d", p)
+		slog.Info("listing backend ready", "address", s.backendAddress)
+		return cmd, nil
+	case <-time.After(20 * time.Second):
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("listing backend did not report a listening port in time")
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		return nil, ctx.Err()
+	}
 }

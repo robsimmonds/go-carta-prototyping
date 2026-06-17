@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -24,41 +25,80 @@ func sendHandler(channel <-chan []byte, conn *websocket.Conn, name string) {
 }
 
 // handleProxiedMessage proxies unhandled messages to the appropriate worker.
-// It extracts the fileId from the message (if present) and routes to the corresponding worker.
+// Messages that target an opened file go to that file's worker; everything else
+// (notably FILE_LIST_REQUEST) goes to the shared listing worker. If the shared
+// worker isn't connected yet, the message is buffered and flushed once it is.
 func (s *Session) handleProxiedMessage(eventType cartaDefinitions.EventType, requestId uint32, bytes []byte) error {
 	messageBytes := cartaHelpers.PrepareBinaryMessage(bytes, eventType, requestId)
 
-	// Try to extract fileId from the message
+	// If the message targets a specific opened file, route to that worker.
 	fileId, hasFileId := cartaHelpers.ExtractFileIdFromBytes(eventType, bytes)
-
-	// Determine which worker to send the message to
-	var targetWorker *SessionWorker
-	var workerName string
-
 	if hasFileId && s.fileMap != nil {
-		// Check if we have a worker for this fileId
 		if worker, exists := s.fileMap[fileId]; exists {
-			targetWorker = worker
-			workerName = fmt.Sprintf("worker:%d", fileId)
-		} else {
-			// FileId found but no worker mapped, use shared worker
-			targetWorker = s.sharedWorker
-			workerName = fmt.Sprintf("shared-worker (fileId:%d not mapped)", fileId)
+			slog.Debug("Proxying message to file worker", "eventType", eventType, "fileId", fileId)
+			worker.sendChan <- messageBytes
+			return nil
 		}
-	} else {
-		// No fileId in message or fileMap not initialized, use shared worker
-		targetWorker = s.sharedWorker
-		workerName = "shared-worker"
 	}
 
-	slog.Debug("Proxying message from client to worker", "eventType", eventType, "workerName", workerName)
-
-	if targetWorker == nil {
-		slog.Debug("Ignoring message because no worker exists yet", "eventType", eventType, "requestId", requestId)
+	// Otherwise route to the shared listing worker, buffering if it isn't ready.
+	s.mu.Lock()
+	if s.sharedWorker == nil {
+		s.pendingShared = append(s.pendingShared, messageBytes)
+		s.mu.Unlock()
+		slog.Debug("Buffered message until shared listing worker is ready", "eventType", eventType, "requestId", requestId)
 		return nil
 	}
+	worker := s.sharedWorker
+	s.mu.Unlock()
 
-	targetWorker.sendChan <- messageBytes
+	slog.Debug("Proxying message to shared listing worker", "eventType", eventType, "requestId", requestId)
+	worker.sendChan <- messageBytes
+	return nil
+}
+
+// connectSharedWorker dials the carta_backend that a carta-list agent spawned
+// for file listing, registers a viewer so it will accept FILE_LIST_REQUEST,
+// attaches it as the session's shared worker, and flushes any messages that
+// were buffered while waiting for it.
+func (s *Session) connectSharedWorker(backendAddress string) error {
+	addr := backendAddress
+	if !strings.HasPrefix(addr, "ws://") && !strings.HasPrefix(addr, "wss://") {
+		addr = "ws://" + addr
+	}
+
+	conn, _, err := websocket.DefaultDialer.DialContext(s.Context, addr, nil)
+	if err != nil {
+		return fmt.Errorf("dial shared listing worker at %s: %w", addr, err)
+	}
+
+	worker := &SessionWorker{
+		conn:           conn,
+		clientSendChan: s.clientSendChan,
+	}
+	worker.handleInit()
+
+	// Register a viewer so the backend establishes a session. Its
+	// REGISTER_VIEWER_ACK is swallowed by the shared-worker path in
+	// workerMessageHandler (the client already received one from carta-ctl).
+	reg := &cartaDefinitions.RegisterViewer{SessionId: 0, ClientFeatureFlags: 0}
+	if err := worker.proxyMessageToWorker(reg, cartaDefinitions.EventType_REGISTER_VIEWER, 1); err != nil {
+		worker.disconnect()
+		return fmt.Errorf("register viewer with shared listing worker: %w", err)
+	}
+
+	s.mu.Lock()
+	s.sharedWorker = worker
+	pending := s.pendingShared
+	s.pendingShared = nil
+	s.mu.Unlock()
+
+	for _, m := range pending {
+		worker.sendChan <- m
+	}
+	if len(pending) > 0 {
+		slog.Info("Flushed buffered messages to shared listing worker", "count", len(pending))
+	}
 	return nil
 }
 
